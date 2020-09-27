@@ -253,23 +253,11 @@ HookRecoverVec:
 
 	LDA	RecoverFlags0
 	BEQ	@exit
-	BPL	@top
-	
-	LDA	GAMECORE + GAMEDATA::DirtyPl + 3
-	ORA	#$80
-	STA	GAMECORE + GAMEDATA::DirtyPl + 3
-
-	LDA	GAMECORE + GAMEDATA::DirtyPl + 4
-	ORA	#$80
-	STA	GAMECORE + GAMEDATA::DirtyPl + 4
-
-	JSR	GameUpdatePiles
 
 @top:
-;	JSR	SolvDrawAll
+	JSR	SparDrawAll
 	
 	LDA	RecoverFlags0
-	BMI	@clearcrds
 	
 	LDA	#$00
 	STA	RecoverFlags0
@@ -278,11 +266,6 @@ HookRecoverVec:
 	JSR	UnBlockProcess
 	
 @exit:
-	RTS
-	
-@clearcrds:
-	LDA	#$01
-	STA	RecoverFlags0
 	RTS
 	
 
@@ -744,93 +727,125 @@ CardMoveSelect:
 ;-------------------------------------------------------------------------------
 CardFindMseCard:
 ;	IN	r15H	pile index
-;		r15L	pile card index
 ;		a1	card pile
-;		r2	
 ;	OUT	r13L	card 
 ;		r13H	length card pile
 ;		r15L	index
-;		r2
+;		r2L	rect top
+;		r2H	rect bottom
 ;-------------------------------------------------------------------------------
 	LDY	#$00
-	STY	r15L
-	STY	r14L
-	
 	LDA	(a1), Y
-	STA	r13H
-	BEQ	@exit
+	BNE	@begin
+	
+	CLC
+	RTS
+	
+@begin:
+	STY	r14L			;not found
+	STY	r15L
+	STY	r12H
+	
+	STA	r13H			;pile card count
+	LDX	r15H			
+	LDA	GAMECORE + GAMEDATA::CrdCmp0, X
+	TAY
+	STY	r12L			;prev index
+	
+	ASL				;compressed offest
+	CLC
+	ADC	#CARDPILE_Y		
+	STA	r2L			;calc rect top
 
 @loop0:
-	LDA	r2L
-	
-	LDY	r15L
 	INY
-	CPY	r13H
-	BNE	@tile0
+	CPY	r13H			;is last card?
+	BCS	@last0
 	
-	CLC
-	ADC	#CARDHEIGHT - 1
-	JMP	@cont0
-	
-@tile0:
-	CLC
+	CLC				;no so tile
 	ADC	#$07
-	
-@cont0:
 	STA	r2H
-	CMP	#$C8
-	BCC	@cont1
+	
+@test0:
+	LDA	r14L			;is already found?
+	BNE	@move0
+	
+	JSR	IsMseInRegion		;no, test if has mouse
+	CMP	#TRUE
+	BNE	@move0
+	
+	LDA	#$01			;found
+	STA	r14L
+	
+	LDA	r12L			
+	STA	r15L	
+	
+@move0:
+	INC	r12L			;next index
+	
+	LDA	r14L			;was found already?
+	BEQ	@offset0
+	
+	CLC				;yes, need bottom offset
+	LDA	r12H
+	ADC	#$08
+	STA	r12H
+	
+	JMP	@next0
+		
+@offset0:
+	LDX	r2H			;no, next rect top
+	INX
+	STX	r2L
+
+@next0:
+	LDY	r12L			;move to test next
+	LDA	r2L
+	JMP	@loop0
+
+@last0:
+	CLC				;at last card
+	ADC	#(CARDHEIGHT - 1)
+	
+	CLC				;include bottom offset
+	ADC	r12H
+	
+	CMP	#$C8			;check screen limit
+	BCC	@test1
 	
 	LDA	#$C7
-	STA	r2H
 	
-@cont1:
-	LDA	r14L
-	BNE	@next0
+@test1:
+	STA	r2H			;rect bottom
 	
-	JSR	IsMseInRegion
+	LDA	r14L			;is already found?
+	BNE	@found1
+	
+	JSR	IsMseInRegion		;no, test if has mouse
 	CMP	#TRUE
-	BNE	@next0
+	BNE	@notfound1
 	
-	LDY	r15L
+	LDY	r12L
+	STY	r15L
+	
 	INY
 	LDA	(a1), Y
-	STA	r13L
-
-;	Store top y co-ord and continue
-	LDA	r2L
-	STA	r14L
-	LDA	r15L
-	STA	r14H
-	
-;	SEC
-;	RTS
-	
-@next0:	
-	INC	r2H
-	LDA	r2H
-	STA	r2L
-	
-	INC	r15L
-	LDA	r15L
-	CMP	r13H
-	BNE	@loop0
-
-@done0:
-	LDA	r14L
-	BEQ	@exit
-	
-	STA	r2L
-	
-	LDA	r14H
-	STA	r15L
+	STA	r13L			;this card
 	
 	SEC
 	RTS
-
-@exit:
-	CLC
 	
+@notfound1:
+	CLC				;not found at all
+	RTS
+	
+@found1:
+	LDY	r15L
+	INY
+	LDA	(a1), Y
+	STA	r13L			;this card
+	
+	SEC				;was found
 	RTS
 	
 
@@ -1068,7 +1083,7 @@ CardLoadPileRect:
 	
 	LDA	GAMECORE + GAMEDATA::CrdCmp0, X
 	ASL
-	STA	r3L
+	STA	r5L
 
 	LDA	r2L
 	STA	r11L
@@ -1086,7 +1101,7 @@ CardLoadPileRect:
 	LDA	r1L
 	CLC
 	ADC	r11L
-	ADC	r3L
+	ADC	r5L
 	
 	STA	r2L
 	
@@ -1131,10 +1146,18 @@ CardCalcComp:
 	
 	JSR	Ddiv
 	
+	LDA	r8L
+	LSR
+	BEQ	@cont0
+	
+	INC	r1L
+	
+@cont0:
 	LDA	r1L
 	ASL
 	ASL
 	
+	LDX	r15H
 	STA	GAMECORE + GAMEDATA::CrdCmp0, X
 	
 @exit:
@@ -1202,7 +1225,7 @@ CardDrawPile:
 	LSR
 	STA	r9H
 	
-	LDA	#$0F
+	LDA	#$10
 	STA	r8L
 	
 	JSR	CardDrawColour	
@@ -1672,6 +1695,23 @@ SparDrawPile:
 	STA	r8L
 	
 	JSR	CardDrawColour
+
+	RTS
+
+
+;-------------------------------------------------------------------------------
+SparDrawAll:
+;-------------------------------------------------------------------------------
+	LDA	#$00
+	STA	r15H
+	
+@loop0:
+	JSR	SparDrawPile
+	
+	INC	r15H
+	LDA	r15H
+	CMP	#$04
+	BNE	@loop0
 
 	RTS
 
@@ -2298,9 +2338,102 @@ ProcAutoSolve:
 	RTS
 
 @begin:
+	LDA	#$00
+	STA	r15H
+	
+@loop:
+	ASL
+	TAX
+	LDA	CardData0, X
+	STA	a1L
+	LDA	CardData0 + 1, X
+	STA	a1H
+	
+	LDY	#$00
+	LDA	(a1), Y
+	
+	BEQ	@next
+	
+	TAY
+	LDA	(a1), Y
+	
+	STA	r13L
+	
+	ASL
+	TAX
+	LDA	Cards0, X
+	BEQ	@next
+	
+	STA	r14L
+	
+	LDA	Cards0 + 1, X
+	STA	r14H
+	
+	LDX	r14L
+	DEX
+	TXA
+	
+	CLC
+	ADC	#$0C
+	STA	r13H
+	
+	LDA	GAMECORE + GAMEDATA::SolvPl0, X
+	ASL
+	TAX
+	LDA	Cards0 + 1, X
+	TAX
+	INX
+	
+	CPX	r14H
+	BEQ	@found
+	
+@next:
+	INC	r15H
+	LDA	r15H
+	CMP	#$08
+	BNE	@loop
+	
+	RTS
+	
+@found:
+	LDY	#$00
+	LDA	(a1), Y
+	TAX
+	DEX
+	STX	r15L
+	JSR	CardLoadPileRect
+	
+	JSR	InvertRectangle
+	
+	LDX	r13H
+	LDA	GAMECORE + GAMEDATA::DirtyPl, X
+	ORA	#$80
+	STA	GAMECORE + GAMEDATA::DirtyPl, X
+	
+	LDX	r14L
+	DEX
+	LDA	r13L
+	STA	GAMECORE + GAMEDATA::SolvPl0, X
+
+	LDX	r15H
+	LDA	GAMECORE + GAMEDATA::DirtyPl, X
+	ORA	#$80
+	STA	GAMECORE + GAMEDATA::DirtyPl, X
+
+	LDY	#$00
+	LDA	(a1), Y
+	
+	STA	GAMECORE + GAMEDATA::LastLns, X
+		
+	TAX
+	DEX
+	TXA
+	STA	(a1), Y
+	
+	JSR	GameUpdatePiles
 
 	RTS
-		
+	
 
 ;-------------------------------------------------------------------------------
 MenuFillColour:
@@ -2419,63 +2552,6 @@ DoMenuOptions:
 
 
 ;-------------------------------------------------------------------------------
-DoMenuDeck:
-;-------------------------------------------------------------------------------
-	LDX	#$01
-	JSR	BlockProcess
-	
-	LDA	RecoverFlags0
-	ORA	#$01
-	STA	RecoverFlags0
-	
-	LDA	#<MainMenuDeck
-	STA	r0L
-	LDA	#>MainMenuDeck
-	STA	r0H
-	
-	JSR	MenuFillColour
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoMenuBack:
-;-------------------------------------------------------------------------------
-	LDX	#$01
-	JSR	BlockProcess
-	
-	LDA	RecoverFlags0
-	ORA	#$81
-	STA	RecoverFlags0
-	
-	LDA	#<DeckMenuBack
-	STA	r0L
-	LDA	#>DeckMenuBack
-	STA	r0H
-	
-	JSR	MenuFillColour
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoMenuColour:
-;-------------------------------------------------------------------------------
-	LDX	#$01
-	JSR	BlockProcess
-	
-	LDA	RecoverFlags0
-	ORA	#$81
-	STA	RecoverFlags0
-	
-	LDA	#<DeckMenuColour
-	STA	r0L
-	LDA	#>DeckMenuColour
-	STA	r0H
-	
-	JSR	MenuFillColour
-	RTS
-
-
-;-------------------------------------------------------------------------------
 DoGeosAbout:
 ;-------------------------------------------------------------------------------
 	JSR	GotoFirstMenu
@@ -2569,238 +2645,6 @@ DoOptionsAuto:
 	RTS
 
 
-;-------------------------------------------------------------------------------
-DoOptionsFlip:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoDeckA:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-	
-	LDA	#'*'
-	STA	MainMenuText12
-	
-	LDA	#' '
-	STA	MainMenuText13
-	STA	MainMenuText14
-	STA	MainMenuText15
-	
-	LDA	#<CardTopBKa
-	STA	CardTopsBK
-	LDA	#>CardTopBKa
-	STA	CardTopsBK + 1
-	
-	LDA	#<SuitBKa
-	STA	CardSuitsBK
-	LDA	#>SuitBKa
-	STA	CardSuitsBK + 1
-	
-	LDA	#<CardBotBKa
-	STA	CardBotsBK
-	LDA	#>CardBotBKa
-	STA	CardBotsBK + 1
-	
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoDeckB:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText13
-	
-	LDA	#' '
-	STA	MainMenuText12
-	STA	MainMenuText14
-	STA	MainMenuText15
-	
-	LDA	#<CardTopBKb
-	STA	CardTopsBK
-	LDA	#>CardTopBKb
-	STA	CardTopsBK + 1
-	
-	LDA	#<SuitBKb
-	STA	CardSuitsBK
-	LDA	#>SuitBKb
-	STA	CardSuitsBK + 1
-	
-	LDA	#<CardBotBKb
-	STA	CardBotsBK
-	LDA	#>CardBotBKb
-	STA	CardBotsBK + 1
-
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoDeckC:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText14
-	
-	LDA	#' '
-	STA	MainMenuText12
-	STA	MainMenuText13
-	STA	MainMenuText15
-	
-	LDA	#<CardTopBKc
-	STA	CardTopsBK
-	LDA	#>CardTopBKc
-	STA	CardTopsBK + 1
-	
-	LDA	#<SuitBKc
-	STA	CardSuitsBK
-	LDA	#>SuitBKc
-	STA	CardSuitsBK + 1
-	
-	LDA	#<CardBotBKc
-	STA	CardBotsBK
-	LDA	#>CardBotBKc
-	STA	CardBotsBK + 1
-	
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoDeckD:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText15
-	
-	LDA	#' '
-	STA	MainMenuText12
-	STA	MainMenuText13
-	STA	MainMenuText14
-	
-	LDA	#<CardTopBKd
-	STA	CardTopsBK
-	LDA	#>CardTopBKd
-	STA	CardTopsBK + 1
-	
-	LDA	#<SuitBKd
-	STA	CardSuitsBK
-	LDA	#>SuitBKd
-	STA	CardSuitsBK + 1
-	
-	LDA	#<CardBotBKd
-	STA	CardBotsBK
-	LDA	#>CardBotBKd
-	STA	CardBotsBK + 1
-	
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoColourA:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText16
-	
-	LDA	#' '
-	STA	MainMenuText17
-	STA	MainMenuText18
-	STA	MainMenuText19
-	STA	MainMenuText20
-	
-	LDA	DeckColours0
-	STA	SuitColoursBK
-	
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoColourB:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText17
-	
-	LDA	#' '
-	STA	MainMenuText16
-	STA	MainMenuText18
-	STA	MainMenuText19
-	STA	MainMenuText20
-	
-	LDA	DeckColours0 + 1
-	STA	SuitColoursBK
-	
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoColourC:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText18
-	
-	LDA	#' '
-	STA	MainMenuText16
-	STA	MainMenuText17
-	STA	MainMenuText19
-	STA	MainMenuText20
-	
-	LDA	DeckColours0 + 2
-	STA	SuitColoursBK
-	
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoColourD:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText19
-	
-	LDA	#' '
-	STA	MainMenuText16
-	STA	MainMenuText17
-	STA	MainMenuText18
-	STA	MainMenuText20
-	
-	LDA	DeckColours0 + 3
-	STA	SuitColoursBK
-	
-	RTS
-
-
-;-------------------------------------------------------------------------------
-DoColourE:
-;-------------------------------------------------------------------------------
-	JSR	GotoFirstMenu
-
-	LDA	#'*'
-	STA	MainMenuText20
-	
-	LDA	#' '
-	STA	MainMenuText16
-	STA	MainMenuText17
-	STA	MainMenuText18
-	STA	MainMenuText19
-	
-	LDA	DeckColours0 + 4
-	STA	SuitColoursBK
-	
-	RTS
-
-
 
 ;-------------------------------------------------------------------------------
 ;DATA SECTION
@@ -2833,8 +2677,8 @@ MainMenu:
 		.byte	$00
 		.byte	$0E
 		.word	$0000
-		.word	$0074
-		.byte	04 | HORIZONTAL
+		.word	$0058
+		.byte	03 | HORIZONTAL
 		.word	MainMenuText0
 		.byte	DYN_SUB_MENU
 		.word	DoMenuGeos
@@ -2844,9 +2688,6 @@ MainMenu:
 		.word	MainMenuText2
 		.byte	DYN_SUB_MENU
 		.word	DoMenuOptions
-		.word	MainMenuText3
-		.byte	DYN_SUB_MENU
-		.word	DoMenuDeck
 MainMenuGeos:
 ;-------------------------------------------------------------------------------
 		.byte	$0F
@@ -2876,80 +2717,21 @@ MainMenuFile:
 MainMenuOptions:
 ;-------------------------------------------------------------------------------
 		.byte	$0F
-		.byte	$2F
+		.byte	$1F
 		.word	$0030
 		.word	$007F
-		.byte	02 | VERTICAL
+		.byte	01 | VERTICAL
 MenuAutoText0:
 		.word	MainMenuText8
 		.byte	MENU_ACTION
 		.word	DoOptionsAuto
-MenuFlipText0:
-		.word	MainMenuText9
-		.byte	MENU_ACTION
-		.word	DoOptionsFlip
-MainMenuDeck:
-;-------------------------------------------------------------------------------
-		.byte	$0F
-		.byte	$2F
-		.word	$0058
-		.word	$0087
-		.byte	02 | VERTICAL
-		.word	MainMenuText10
-		.byte	DYN_SUB_MENU
-		.word	DoMenuBack
-		.word	MainMenuText11
-		.byte	DYN_SUB_MENU
-		.word	DoMenuColour
-DeckMenuBack:
-;-------------------------------------------------------------------------------
-		.byte	$0F
-		.byte	$47
-		.word	$0087
-		.word	$00AF
-		.byte	04 | VERTICAL
-		.word	MainMenuText12
-		.byte	MENU_ACTION
-		.word	DoDeckA
-		.word	MainMenuText13
-		.byte	MENU_ACTION
-		.word	DoDeckB
-		.word	MainMenuText14
-		.byte	MENU_ACTION
-		.word	DoDeckC
-		.word	MainMenuText15
-		.byte	MENU_ACTION
-		.word	DoDeckD
-DeckMenuColour:
-;-------------------------------------------------------------------------------
-		.byte	$0F
-		.byte	$57
-		.word	$0087
-		.word	$00BF
-		.byte	05 | VERTICAL
-		.word	MainMenuText16
-		.byte	MENU_ACTION
-		.word	DoColourA
-		.word	MainMenuText17
-		.byte	MENU_ACTION
-		.word	DoColourB
-		.word	MainMenuText18
-		.byte	MENU_ACTION
-		.word	DoColourC
-		.word	MainMenuText19
-		.byte	MENU_ACTION
-		.word	DoColourD
-		.word	MainMenuText20
-		.byte	MENU_ACTION
-		.word	DoColourE
+
 MainMenuText0:
 		.byte	"geos", $00
 MainMenuText1:
 		.byte	"file", $00
 MainMenuText2:
 		.byte	"options", $00
-MainMenuText3:
-		.byte	"deck", $00
 MainMenuText4:
 		.byte	"about", $00
 MainMenuText5:
@@ -2962,32 +2744,6 @@ MainMenuText8:
 		.byte	"auto solve: on", $00
 MainMenuText8a:
 		.byte	"auto solve: off", $00
-MainMenuText9:
-		.byte	"flip count: 3", $00
-MainMenuText9a:
-		.byte	"flip count: 1", $00
-MainMenuText10:
-		.byte	"back >", $00
-MainMenuText11:
-		.byte	"colour >", $00
-MainMenuText12:
-		.byte	"*  a", $00
-MainMenuText13:
-		.byte	"   b", $00
-MainMenuText14:
-		.byte	"   c", $00
-MainMenuText15:
-		.byte	"   d", $00
-MainMenuText16:
-		.byte	"*  orange", $00
-MainMenuText17:
-		.byte	"   green", $00
-MainMenuText18:
-		.byte	"   blue", $00
-MainMenuText19:
-		.byte	"   pink", $00
-MainMenuText20:
-		.byte	"   grey", $00
 
 
 CardPileLeft0:
